@@ -1,6 +1,5 @@
 AI Generated Code
 
----------------------------------------------------------------------------------
 Prompt 1 – Create complete architecture
 ---------------------------------------------------------------------------------
 Analyze this .NET Console project and create a clean architecture for an AI Audio Enhancer application.
@@ -24,7 +23,7 @@ Requirements:
 
 Create all folders, classes and interfaces.
 Do not implement methods yet.
----------------------------------------------------------------------------------
+
 Prompt 2 – Generate FFmpeg service
 ---------------------------------------------------------------------------------
 Implement IVideoService.
@@ -45,7 +44,7 @@ Store temporary files inside a Temp folder.
 Add robust error handling and logging.
 
 Use ProcessStartInfo.
----------------------------------------------------------------------------------
+
 Prompt 3 – Generate Audio Preview Service
 ---------------------------------------------------------------------------------
 Implement IAudioPreviewService using NAudio.
@@ -63,7 +62,7 @@ Show duration.
 Allow user to replay audio multiple times.
 
 Dispose resources correctly.
----------------------------------------------------------------------------------
+
 Prompt 4 – Generate FFmpeg Fast Enhancement
 ---------------------------------------------------------------------------------
 Implement FastEnhancementService.
@@ -84,7 +83,7 @@ enhanced wav file
 Return output path.
 
 Add logging and error handling.
----------------------------------------------------------------------------------
+
 Prompt 5 – Generate DeepFilterNet Integration
 ---------------------------------------------------------------------------------
 Implement DeepFilterNetEnhancementService.
@@ -100,7 +99,7 @@ Requirements:
 7. Use async execution.
 
 Assume DeepFilterNet executable path is provided through appsettings.json.
----------------------------------------------------------------------------------
+
 Prompt 6 – Generate RNNoise Integration
 ---------------------------------------------------------------------------------
 Implement RNNoiseEnhancementService.
@@ -113,7 +112,7 @@ Requirements:
 4. Capture console output.
 5. Handle failures gracefully.
 6. Return output path.
----------------------------------------------------------------------------------
+
 Prompt 7 – Generate Menu System
 ---------------------------------------------------------------------------------
 Create interactive console menu.
@@ -140,7 +139,7 @@ Allow selecting another enhancement profile.
 
 If Yes:
 Continue to final video generation.
----------------------------------------------------------------------------------
+
 Prompt 8 – Generate Orchestration Service
 ---------------------------------------------------------------------------------
 Create AudioEnhancementWorkflowService.
@@ -163,7 +162,7 @@ Use dependency injection.
 Use async/await.
 
 Provide progress messages
----------------------------------------------------------------------------------
+
 Prompt 9 – Add Configuration
 ---------------------------------------------------------------------------------
 Add strongly typed configuration.
@@ -181,7 +180,7 @@ TempFolder
 OutputFolder
 
 Create options classes and register them with dependency injection.
----------------------------------------------------------------------------------
+
 Prompt 10 – Production Improvements
 ---------------------------------------------------------------------------------
 Review the entire solution.
@@ -198,8 +197,7 @@ Add:
 8. Unit-testable design.
 9. XML comments.
 10. Error recovery.
-11. 
----------------------------------------------------------------------------------
+
 One final "super prompt"
 ---------------------------------------------------------------------------------
 

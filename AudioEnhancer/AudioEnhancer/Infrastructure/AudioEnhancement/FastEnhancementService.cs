@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using AudioEnhancer.Application.Interfaces;
 using AudioEnhancer.Infrastructure.Options;
+using AudioEnhancer.Infrastructure.Processes;
+using AudioEnhancer.Infrastructure.VideoProcessing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -10,13 +12,19 @@ public sealed class FastEnhancementService : IFastEnhancementService
 {
     private const string FastEnhancementFilters = "highpass=f=80,lowpass=f=12000,afftdn,loudnorm";
     private readonly AudioEnhancerOptions _options;
+    private readonly IFfmpegInstallationValidator _ffmpegInstallationValidator;
+    private readonly IProcessRunner _processRunner;
     private readonly ILogger<FastEnhancementService> _logger;
 
     public FastEnhancementService(
         IOptions<AudioEnhancerOptions> options,
+        IFfmpegInstallationValidator ffmpegInstallationValidator,
+        IProcessRunner processRunner,
         ILogger<FastEnhancementService> logger)
     {
         _options = options.Value;
+        _ffmpegInstallationValidator = ffmpegInstallationValidator;
+        _processRunner = processRunner;
         _logger = logger;
     }
 
@@ -27,13 +35,15 @@ public sealed class FastEnhancementService : IFastEnhancementService
     {
         ValidateInput(inputWavFile, outputWavFile);
         EnsureOutputDirectory(outputWavFile);
+        await _ffmpegInstallationValidator.ValidateAsync(cancellationToken);
 
         _logger.LogInformation(
             "Starting fast audio enhancement. Input: {InputWavFile}. Output: {OutputWavFile}.",
             inputWavFile,
             outputWavFile);
 
-        await RunFfmpegAsync(
+        await RunFfmpegWithRetryAsync(
+            outputWavFile,
             cancellationToken,
             "-y",
             "-i", inputWavFile,
@@ -51,79 +61,86 @@ public sealed class FastEnhancementService : IFastEnhancementService
         return outputWavFile;
     }
 
-    private async Task RunFfmpegAsync(CancellationToken cancellationToken, params string[] arguments)
+    private async Task RunFfmpegWithRetryAsync(
+        string outputWavFile,
+        CancellationToken cancellationToken,
+        params string[] arguments)
     {
-        using var process = new Process();
-        process.StartInfo = CreateProcessStartInfo(arguments);
+        int maxAttempts = Math.Max(1, _options.FFmpegRetryCount + 1);
+        TimeSpan retryDelay = TimeSpan.FromMilliseconds(Math.Max(0, _options.FFmpegRetryDelayMilliseconds));
+        Exception? lastException = null;
 
-        try
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            _logger.LogDebug("Starting FFmpeg command: {Command}", BuildCommandForLog(_options.FFmpegPath, arguments));
+            cancellationToken.ThrowIfCancellationRequested();
+            DeletePartialOutput(outputWavFile);
 
-            if (!process.Start())
+            try
             {
-                throw new InvalidOperationException("FFmpeg process could not be started.");
+                await RunFfmpegOnceAsync(cancellationToken, arguments);
+                return;
             }
-
-            Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            Task<string> standardErrorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
-            await process.WaitForExitAsync(cancellationToken);
-
-            string standardOutput = await standardOutputTask;
-            string standardError = await standardErrorTask;
-
-            if (!string.IsNullOrWhiteSpace(standardOutput))
+            catch (OperationCanceledException)
             {
-                _logger.LogDebug("FFmpeg stdout: {StandardOutput}", standardOutput);
+                DeletePartialOutput(outputWavFile);
+                _logger.LogWarning("FFmpeg fast enhancement was canceled.");
+                throw;
             }
-
-            if (process.ExitCode != 0)
+            catch (Exception ex) when (attempt < maxAttempts)
             {
-                _logger.LogError(
-                    "FFmpeg fast enhancement failed with exit code {ExitCode}. Error: {StandardError}",
-                    process.ExitCode,
-                    standardError);
+                lastException = ex;
+                DeletePartialOutput(outputWavFile);
 
-                throw new InvalidOperationException(
-                    $"FFmpeg fast enhancement failed with exit code {process.ExitCode}. Details: {standardError}");
+                _logger.LogWarning(
+                    ex,
+                    "FFmpeg fast enhancement failed and will be retried. Attempt: {Attempt}. MaxAttempts: {MaxAttempts}. RetryDelay: {RetryDelay}.",
+                    attempt,
+                    maxAttempts,
+                    retryDelay);
+
+                if (retryDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(retryDelay, cancellationToken);
+                }
             }
-
-            if (!string.IsNullOrWhiteSpace(standardError))
+            catch
             {
-                _logger.LogDebug("FFmpeg stderr: {StandardError}", standardError);
+                DeletePartialOutput(outputWavFile);
+                throw;
             }
         }
-        catch (OperationCanceledException)
-        {
-            TryKillProcess(process);
-            _logger.LogWarning("FFmpeg fast enhancement was canceled.");
-            throw;
-        }
-        catch (Exception ex) when (ex is not InvalidOperationException)
-        {
-            _logger.LogError(ex, "Unexpected error while running FFmpeg fast enhancement.");
-            throw new InvalidOperationException("Unexpected error while running FFmpeg fast enhancement.", ex);
-        }
+
+        throw new InvalidOperationException("FFmpeg fast enhancement failed after all retry attempts.", lastException);
     }
 
-    private ProcessStartInfo CreateProcessStartInfo(IReadOnlyList<string> arguments)
+    private async Task RunFfmpegOnceAsync(CancellationToken cancellationToken, params string[] arguments)
     {
-        var processStartInfo = new ProcessStartInfo
-        {
-            FileName = _options.FFmpegPath,
-            UseShellExecute = false,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true
-        };
+        ProcessStartInfo startInfo = CreateProcessStartInfo(arguments);
 
-        foreach (string argument in arguments)
+        _logger.LogDebug("Starting FFmpeg command: {Command}", BuildCommandForLog(_options.FFmpegPath, arguments));
+
+        ProcessRunResult result = await _processRunner.RunAsync(startInfo, cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(result.StandardOutput))
         {
-            processStartInfo.ArgumentList.Add(argument);
+            _logger.LogDebug("FFmpeg stdout: {StandardOutput}", result.StandardOutput);
         }
 
-        return processStartInfo;
+        if (!string.IsNullOrWhiteSpace(result.StandardError))
+        {
+            _logger.LogDebug("FFmpeg stderr: {StandardError}", result.StandardError);
+        }
+
+        if (result.ExitCode != 0)
+        {
+            _logger.LogError(
+                "FFmpeg fast enhancement failed with exit code {ExitCode}. Error: {StandardError}",
+                result.ExitCode,
+                result.StandardError);
+
+            throw new InvalidOperationException(
+                $"FFmpeg fast enhancement failed with exit code {result.ExitCode}. Details: {GetBestError(result)}");
+        }
     }
 
     private static void ValidateInput(string inputWavFile, string outputWavFile)
@@ -167,18 +184,54 @@ public sealed class FastEnhancementService : IFastEnhancementService
         }
     }
 
-    private static void TryKillProcess(Process process)
+    private ProcessStartInfo CreateProcessStartInfo(IReadOnlyList<string> arguments)
+    {
+        var processStartInfo = new ProcessStartInfo
+        {
+            FileName = _options.FFmpegPath,
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true
+        };
+
+        foreach (string argument in arguments)
+        {
+            processStartInfo.ArgumentList.Add(argument);
+        }
+
+        return processStartInfo;
+    }
+
+    private void DeletePartialOutput(string outputWavFile)
     {
         try
         {
-            if (!process.HasExited)
+            if (File.Exists(outputWavFile))
             {
-                process.Kill(entireProcessTree: true);
+                File.Delete(outputWavFile);
+                _logger.LogDebug("Deleted partial fast enhancement output. OutputWavFile: {OutputWavFile}.", outputWavFile);
             }
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            _logger.LogWarning(ex, "Could not delete partial fast enhancement output. OutputWavFile: {OutputWavFile}.", outputWavFile);
         }
+    }
+
+    private static string GetBestError(ProcessRunResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.StandardError))
+        {
+            return result.StandardError;
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+        {
+            return result.StandardOutput;
+        }
+
+        return "No FFmpeg output was captured.";
     }
 
     private static string BuildCommandForLog(string executablePath, IEnumerable<string> arguments)

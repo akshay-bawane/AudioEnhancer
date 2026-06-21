@@ -13,4 +13,8 @@ public sealed class AudioEnhancerOptions
     public string TempFolder { get; init; } = "Temp";
 
     public string OutputFolder { get; init; } = "Output";
+
+    public int FFmpegRetryCount { get; init; } = 2;
+
+    public int FFmpegRetryDelayMilliseconds { get; init; } = 500;
 }

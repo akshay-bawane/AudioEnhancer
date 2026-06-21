@@ -5,6 +5,7 @@ using AudioEnhancer.Infrastructure.AudioExtraction;
 using AudioEnhancer.Infrastructure.Options;
 using AudioEnhancer.Infrastructure.Paths;
 using AudioEnhancer.Infrastructure.Playback;
+using AudioEnhancer.Infrastructure.Processes;
 using AudioEnhancer.Infrastructure.VideoProcessing;
 using AudioEnhancer.Presentation.Console;
 using Microsoft.Extensions.Configuration;
@@ -24,6 +25,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IOutputPathService, OutputPathService>();
         services.AddLogging(builder => builder.AddConsole());
 
+        services.AddSingleton<IProcessRunner, ProcessRunner>();
+        services.AddSingleton<IFfmpegInstallationValidator, FfmpegInstallationValidator>();
         services.AddSingleton<IVideoService, FfmpegVideoService>();
         services.AddSingleton<IAudioExtractor, FfmpegAudioExtractor>();
         services.AddSingleton<NAudioPreviewPlayer>();

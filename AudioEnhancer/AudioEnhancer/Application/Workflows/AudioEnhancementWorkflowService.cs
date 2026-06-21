@@ -1,4 +1,5 @@
 using AudioEnhancer.Application.Interfaces;
+using AudioEnhancer.Application.Models;
 using AudioEnhancer.Domain.Enums;
 using AudioEnhancer.Domain.Models;
 using Microsoft.Extensions.Logging;
@@ -39,6 +40,7 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
     public async Task<EnhancementWorkflowResult> RunAsync(CancellationToken cancellationToken = default)
     {
         WriteProgress("AI Audio Enhancer");
+        var videoProgress = new Progress<VideoProcessingProgress>(ReportVideoProgress);
 
         string videoPath = await _consoleInputService.ReadVideoPathAsync(cancellationToken);
         WriteProgress("Extracting audio from video...");
@@ -47,7 +49,8 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
             new AudioExtractionRequest(
                 videoPath,
                 _outputPathService.GetExtractedAudioPath(videoPath)),
-            cancellationToken);
+            cancellationToken,
+            videoProgress);
 
         WriteProgress($"Audio extracted: {extractedAudioPath}");
 
@@ -107,7 +110,8 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
                     videoPath,
                     enhancementResult.EnhancedAudioPath,
                     finalVideoPath),
-                cancellationToken);
+                cancellationToken,
+                videoProgress);
 
             WriteProgress($"Final enhanced video saved: {finalVideoPath}");
 
@@ -124,5 +128,14 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
         System.Console.WriteLine();
         System.Console.WriteLine($"[AudioEnhancer] {message}");
         _logger.LogInformation("{Message}", message);
+    }
+
+    private void ReportVideoProgress(VideoProcessingProgress progress)
+    {
+        string percentage = progress.PercentComplete is { } value
+            ? $" ({value:0.#}%)"
+            : string.Empty;
+
+        WriteProgress($"{progress.Operation}: {progress.Message}{percentage}");
     }
 }

@@ -1,6 +1,7 @@
 using AudioEnhancer.Application.Interfaces;
 using AudioEnhancer.Domain.Enums;
 using AudioEnhancer.Domain.Models;
+using Microsoft.Extensions.Logging;
 
 namespace AudioEnhancer.Application.Workflows;
 
@@ -14,6 +15,7 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
     private readonly IOutputPathService _outputPathService;
     private readonly IConsoleInputService _consoleInputService;
     private readonly ITemporaryFileCleaner _temporaryFileCleaner;
+    private readonly ILogger<AudioEnhancementWorkflow> _logger;
 
     public AudioEnhancementWorkflow(
         IAudioExtractor audioExtractor,
@@ -23,7 +25,8 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
         IVideoAudioReplacer videoAudioReplacer,
         IOutputPathService outputPathService,
         IConsoleInputService consoleInputService,
-        ITemporaryFileCleaner temporaryFileCleaner)
+        ITemporaryFileCleaner temporaryFileCleaner,
+        ILogger<AudioEnhancementWorkflow> logger)
     {
         _audioExtractor = audioExtractor;
         _audioEnhancerFactory = audioEnhancerFactory;
@@ -33,6 +36,7 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
         _outputPathService = outputPathService;
         _consoleInputService = consoleInputService;
         _temporaryFileCleaner = temporaryFileCleaner;
+        _logger = logger;
     }
 
     public async Task<EnhancementWorkflowResult> RunAsync(EnhancementWorkflowRequest request, CancellationToken cancellationToken = default)
@@ -40,6 +44,10 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
         var temporaryFiles = new List<string>();
         string extractedAudioPath = _outputPathService.GetExtractedAudioPath(request.VideoPath);
         temporaryFiles.Add(extractedAudioPath);
+        _logger.LogInformation(
+            "Workflow extraction path generated. VideoPath: {VideoPath}. ExtractedWavPath: {ExtractedWavPath}.",
+            Path.GetFullPath(request.VideoPath),
+            Path.GetFullPath(extractedAudioPath));
 
         try
         {
@@ -58,6 +66,12 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
                 string enhancedAudioPath = _outputPathService.GetEnhancedAudioPath(request.VideoPath, currentProfile);
                 temporaryFiles.Add(enhancedAudioPath);
                 IAudioEnhancementStrategy enhancementStrategy = _audioEnhancerFactory.GetStrategy(currentProfile);
+                LogExistingFile("Enhancement input WAV still exists before enhancement", extractedAudioPath);
+                _logger.LogInformation(
+                    "Workflow enhancement paths. Profile: {Profile}. DeepFilterInputPath: {InputAudioPath}. EnhancedOutputPath: {EnhancedAudioPath}.",
+                    currentProfile,
+                    Path.GetFullPath(extractedAudioPath),
+                    Path.GetFullPath(enhancedAudioPath));
 
                 AudioEnhancementResult enhancementResult = await enhancementStrategy.EnhanceAsync(
                     new AudioEnhancementRequest(
@@ -79,6 +93,11 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
                 if (approved)
                 {
                     string finalVideoPath = _outputPathService.GetFinalVideoPath(request.VideoPath, currentProfile);
+                    _logger.LogInformation(
+                        "Workflow final merge paths. VideoPath: {VideoPath}. EnhancedAudioPath: {EnhancedAudioPath}. FinalVideoPath: {FinalVideoPath}.",
+                        Path.GetFullPath(request.VideoPath),
+                        Path.GetFullPath(enhancementResult.EnhancedAudioPath),
+                        Path.GetFullPath(finalVideoPath));
 
                     await _videoAudioReplacer.ReplaceAudioAsync(
                         new VideoAudioReplacementRequest(
@@ -114,5 +133,16 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
                 _temporaryFileCleaner.DeleteIfExists(temporaryFile);
             }
         }
+    }
+
+    private void LogExistingFile(string message, string filePath)
+    {
+        var fileInfo = new FileInfo(filePath);
+        _logger.LogInformation(
+            "{Message}. FilePath: {FilePath}. Exists: {Exists}. Length: {Length}.",
+            message,
+            fileInfo.FullName,
+            fileInfo.Exists,
+            fileInfo.Exists ? fileInfo.Length : 0);
     }
 }

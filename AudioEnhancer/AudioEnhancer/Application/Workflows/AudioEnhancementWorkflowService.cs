@@ -2,6 +2,7 @@ using AudioEnhancer.Application.Interfaces;
 using AudioEnhancer.Application.Models;
 using AudioEnhancer.Domain.Enums;
 using AudioEnhancer.Domain.Models;
+using Microsoft.Extensions.Logging;
 
 namespace AudioEnhancer.Application.Workflows;
 
@@ -16,6 +17,7 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
     private readonly IOutputPathService _outputPathService;
     private readonly ITemporaryFileCleaner _temporaryFileCleaner;
     private readonly IWorkflowProgressReporter _progressReporter;
+    private readonly ILogger<AudioEnhancementWorkflowService> _logger;
 
     public AudioEnhancementWorkflowService(
         IConsoleInputService consoleInputService,
@@ -26,7 +28,8 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
         IVideoAudioReplacer videoAudioReplacer,
         IOutputPathService outputPathService,
         ITemporaryFileCleaner temporaryFileCleaner,
-        IWorkflowProgressReporter progressReporter)
+        IWorkflowProgressReporter progressReporter,
+        ILogger<AudioEnhancementWorkflowService> logger)
     {
         _consoleInputService = consoleInputService;
         _audioExtractor = audioExtractor;
@@ -37,6 +40,7 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
         _outputPathService = outputPathService;
         _temporaryFileCleaner = temporaryFileCleaner;
         _progressReporter = progressReporter;
+        _logger = logger;
     }
 
     public async Task<EnhancementWorkflowResult> RunAsync(CancellationToken cancellationToken = default)
@@ -46,10 +50,15 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
         var temporaryFiles = new List<string>();
 
         string videoPath = await _consoleInputService.ReadVideoPathAsync(cancellationToken);
+        _logger.LogInformation("Workflow video input selected. VideoPath: {VideoPath}.", Path.GetFullPath(videoPath));
         WriteProgress("Extracting audio from video...");
 
         string extractedAudioPath = _outputPathService.GetExtractedAudioPath(videoPath);
         temporaryFiles.Add(extractedAudioPath);
+        _logger.LogInformation(
+            "Workflow extraction path generated. VideoPath: {VideoPath}. ExtractedWavPath: {ExtractedWavPath}.",
+            Path.GetFullPath(videoPath),
+            Path.GetFullPath(extractedAudioPath));
 
         try
         {
@@ -61,6 +70,7 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
                 videoProgress);
 
             WriteProgress($"Audio extracted: {extractedAudioPath}");
+            LogExistingFile("Extracted WAV ready for enhancement", extractedAudioPath);
 
             while (true)
             {
@@ -83,6 +93,12 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
                 string enhancedAudioPath = _outputPathService.GetEnhancedAudioPath(videoPath, profile);
                 temporaryFiles.Add(enhancedAudioPath);
                 IAudioEnhancementStrategy enhancementStrategy = _audioEnhancerFactory.GetStrategy(profile);
+                _logger.LogInformation(
+                    "Workflow enhancement paths. Profile: {Profile}. DeepFilterInputPath: {InputAudioPath}. EnhancedOutputPath: {EnhancedAudioPath}.",
+                    profile,
+                    Path.GetFullPath(extractedAudioPath),
+                    Path.GetFullPath(enhancedAudioPath));
+                LogExistingFile("Enhancement input WAV still exists before enhancement", extractedAudioPath);
 
                 AudioEnhancementResult enhancementResult = await enhancementStrategy.EnhanceAsync(
                     new AudioEnhancementRequest(
@@ -113,6 +129,11 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
                 WriteProgress("Replacing original video audio...");
 
                 string finalVideoPath = _outputPathService.GetFinalVideoPath(videoPath, profile);
+                _logger.LogInformation(
+                    "Workflow final merge paths. VideoPath: {VideoPath}. EnhancedAudioPath: {EnhancedAudioPath}. FinalVideoPath: {FinalVideoPath}.",
+                    Path.GetFullPath(videoPath),
+                    Path.GetFullPath(enhancementResult.EnhancedAudioPath),
+                    Path.GetFullPath(finalVideoPath));
 
                 await _videoAudioReplacer.ReplaceAudioAsync(
                     new VideoAudioReplacementRequest(
@@ -152,5 +173,16 @@ public sealed class AudioEnhancementWorkflowService : IAudioEnhancementWorkflowS
             : string.Empty;
 
         WriteProgress($"{progress.Operation}: {progress.Message}{percentage}");
+    }
+
+    private void LogExistingFile(string message, string filePath)
+    {
+        var fileInfo = new FileInfo(filePath);
+        _logger.LogInformation(
+            "{Message}. FilePath: {FilePath}. Exists: {Exists}. Length: {Length}.",
+            message,
+            fileInfo.FullName,
+            fileInfo.Exists,
+            fileInfo.Exists ? fileInfo.Length : 0);
     }
 }

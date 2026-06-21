@@ -36,11 +36,14 @@ public sealed class ExternalProcessExecutor : IExternalProcessExecutor
             try
             {
                 _logger.LogInformation(
-                    "Starting external process. Operation: {Operation}. Attempt: {Attempt}. MaxAttempts: {MaxAttempts}. FileName: {FileName}.",
+                    "Starting external process. Operation: {Operation}. Attempt: {Attempt}. MaxAttempts: {MaxAttempts}. FileName: {FileName}. Arguments: {Arguments}. WorkingDirectory: {WorkingDirectory}. Command: {Command}.",
                     request.OperationName,
                     attempt,
                     maxAttempts,
-                    request.StartInfo.FileName);
+                    request.StartInfo.FileName,
+                    string.Join(' ', request.StartInfo.ArgumentList),
+                    ProcessCommandFormatter.GetWorkingDirectory(request.StartInfo),
+                    ProcessCommandFormatter.FormatCommand(request.StartInfo));
 
                 ProcessRunResult result = await _processRunner.RunAsync(request.StartInfo, cancellationToken);
 

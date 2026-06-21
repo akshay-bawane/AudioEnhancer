@@ -33,6 +33,13 @@ public sealed class ProcessRunner : IProcessRunner
 
         try
         {
+            _logger.LogInformation(
+                "Starting process. FileName: {FileName}. Arguments: {Arguments}. WorkingDirectory: {WorkingDirectory}. Command: {Command}.",
+                startInfo.FileName,
+                string.Join(' ', startInfo.ArgumentList),
+                ProcessCommandFormatter.GetWorkingDirectory(startInfo),
+                ProcessCommandFormatter.FormatCommand(startInfo));
+
             process.OutputDataReceived += (_, args) =>
             {
                 if (args.Data is not null)

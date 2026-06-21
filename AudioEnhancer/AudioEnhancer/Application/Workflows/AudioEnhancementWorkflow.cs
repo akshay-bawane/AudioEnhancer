@@ -13,6 +13,7 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
     private readonly IVideoAudioReplacer _videoAudioReplacer;
     private readonly IOutputPathService _outputPathService;
     private readonly IConsoleInputService _consoleInputService;
+    private readonly ITemporaryFileCleaner _temporaryFileCleaner;
 
     public AudioEnhancementWorkflow(
         IAudioExtractor audioExtractor,
@@ -21,7 +22,8 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
         IUserApprovalService userApprovalService,
         IVideoAudioReplacer videoAudioReplacer,
         IOutputPathService outputPathService,
-        IConsoleInputService consoleInputService)
+        IConsoleInputService consoleInputService,
+        ITemporaryFileCleaner temporaryFileCleaner)
     {
         _audioExtractor = audioExtractor;
         _audioEnhancerFactory = audioEnhancerFactory;
@@ -30,71 +32,87 @@ public sealed class AudioEnhancementWorkflow : IAudioEnhancementWorkflow
         _videoAudioReplacer = videoAudioReplacer;
         _outputPathService = outputPathService;
         _consoleInputService = consoleInputService;
+        _temporaryFileCleaner = temporaryFileCleaner;
     }
 
     public async Task<EnhancementWorkflowResult> RunAsync(EnhancementWorkflowRequest request, CancellationToken cancellationToken = default)
     {
-        string extractedAudioPath = await _audioExtractor.ExtractAsync(
-            new AudioExtractionRequest(
-                request.VideoPath,
-                _outputPathService.GetExtractedAudioPath(request.VideoPath)),
-            cancellationToken);
+        var temporaryFiles = new List<string>();
+        string extractedAudioPath = _outputPathService.GetExtractedAudioPath(request.VideoPath);
+        temporaryFiles.Add(extractedAudioPath);
 
-        EnhancementProfile currentProfile = request.Profile;
-
-        while (true)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            string enhancedAudioPath = _outputPathService.GetEnhancedAudioPath(request.VideoPath, currentProfile);
-            IAudioEnhancementStrategy enhancementStrategy = _audioEnhancerFactory.GetStrategy(currentProfile);
-
-            AudioEnhancementResult enhancementResult = await enhancementStrategy.EnhanceAsync(
-                new AudioEnhancementRequest(
-                    extractedAudioPath,
-                    enhancedAudioPath,
-                    currentProfile),
+            extractedAudioPath = await _audioExtractor.ExtractAsync(
+                new AudioExtractionRequest(
+                    request.VideoPath,
+                    extractedAudioPath),
                 cancellationToken);
 
-            bool playPreview = await _consoleInputService.ReadPlayPreviewAsync(cancellationToken);
-            if (playPreview)
+            EnhancementProfile currentProfile = request.Profile;
+
+            while (true)
             {
-                await _audioPreviewPlayer.PlayAsync(enhancementResult.EnhancedAudioPath, cancellationToken);
-            }
+                cancellationToken.ThrowIfCancellationRequested();
 
-            bool approved = await _userApprovalService.RequestApprovalAsync(
-                enhancementResult.EnhancedAudioPath,
-                cancellationToken);
+                string enhancedAudioPath = _outputPathService.GetEnhancedAudioPath(request.VideoPath, currentProfile);
+                temporaryFiles.Add(enhancedAudioPath);
+                IAudioEnhancementStrategy enhancementStrategy = _audioEnhancerFactory.GetStrategy(currentProfile);
 
-            if (approved)
-            {
-                string finalVideoPath = _outputPathService.GetFinalVideoPath(request.VideoPath, currentProfile);
-
-                await _videoAudioReplacer.ReplaceAudioAsync(
-                    new VideoAudioReplacementRequest(
-                        request.VideoPath,
-                        enhancementResult.EnhancedAudioPath,
-                        finalVideoPath),
+                AudioEnhancementResult enhancementResult = await enhancementStrategy.EnhanceAsync(
+                    new AudioEnhancementRequest(
+                        extractedAudioPath,
+                        enhancedAudioPath,
+                        currentProfile),
                     cancellationToken);
 
-                return new EnhancementWorkflowResult(
-                    extractedAudioPath,
-                    enhancementResult.EnhancedAudioPath,
-                    finalVideoPath,
-                    Approved: true);
-            }
+                bool playPreview = await _consoleInputService.ReadPlayPreviewAsync(cancellationToken);
+                if (playPreview)
+                {
+                    await _audioPreviewPlayer.PlayAsync(enhancementResult.EnhancedAudioPath, cancellationToken);
+                }
 
-            EnhancementProfile? nextProfile = await _consoleInputService.ReadEnhancementProfileMenuAsync(cancellationToken);
-            if (nextProfile is null)
+                bool approved = await _userApprovalService.RequestApprovalAsync(
+                    enhancementResult.EnhancedAudioPath,
+                    cancellationToken);
+
+                if (approved)
+                {
+                    string finalVideoPath = _outputPathService.GetFinalVideoPath(request.VideoPath, currentProfile);
+
+                    await _videoAudioReplacer.ReplaceAudioAsync(
+                        new VideoAudioReplacementRequest(
+                            request.VideoPath,
+                            enhancementResult.EnhancedAudioPath,
+                            finalVideoPath),
+                        cancellationToken);
+
+                    return new EnhancementWorkflowResult(
+                        extractedAudioPath,
+                        enhancementResult.EnhancedAudioPath,
+                        finalVideoPath,
+                        Approved: true);
+                }
+
+                EnhancementProfile? nextProfile = await _consoleInputService.ReadEnhancementProfileMenuAsync(cancellationToken);
+                if (nextProfile is null)
+                {
+                    return new EnhancementWorkflowResult(
+                        extractedAudioPath,
+                        enhancementResult.EnhancedAudioPath,
+                        FinalVideoPath: null,
+                        Approved: false);
+                }
+
+                currentProfile = nextProfile.Value;
+            }
+        }
+        finally
+        {
+            foreach (string temporaryFile in temporaryFiles)
             {
-                return new EnhancementWorkflowResult(
-                    extractedAudioPath,
-                    enhancementResult.EnhancedAudioPath,
-                    FinalVideoPath: null,
-                    Approved: false);
+                _temporaryFileCleaner.DeleteIfExists(temporaryFile);
             }
-
-            currentProfile = nextProfile.Value;
         }
     }
 }

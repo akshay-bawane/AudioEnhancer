@@ -1,6 +1,6 @@
-using System.Diagnostics;
 using AudioEnhancer.Application.Interfaces;
 using AudioEnhancer.Infrastructure.Options;
+using AudioEnhancer.Infrastructure.Processes;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -9,13 +9,16 @@ namespace AudioEnhancer.Infrastructure.AudioEnhancement;
 public sealed class DeepFilterNetEnhancementService : IDeepFilterNetEnhancementService
 {
     private readonly AudioEnhancerOptions _options;
+    private readonly IProcessRunner _processRunner;
     private readonly ILogger<DeepFilterNetEnhancementService> _logger;
 
     public DeepFilterNetEnhancementService(
         IOptions<AudioEnhancerOptions> options,
+        IProcessRunner processRunner,
         ILogger<DeepFilterNetEnhancementService> logger)
     {
         _options = options.Value;
+        _processRunner = processRunner;
         _logger = logger;
     }
 
@@ -33,12 +36,18 @@ public sealed class DeepFilterNetEnhancementService : IDeepFilterNetEnhancementS
             inputWavFile,
             outputWavFile);
 
-        ProcessResult result = await RunDeepFilterNetAsync(inputWavFile, outputWavFile, cancellationToken);
+        ProcessRunResult result = await _processRunner.RunAsync(
+            ProcessStartInfoFactory.Create(
+                _options.DeepFilterNetPath,
+                new[] { inputWavFile, "-o", outputWavFile }),
+            cancellationToken);
+
+        LogProcessOutput(result);
 
         if (result.ExitCode != 0)
         {
             _logger.LogError(
-                "DeepFilterNet failed with exit code {ExitCode}. Stdout: {StandardOutput}. Stderr: {StandardError}.",
+                "DeepFilterNet failed with exit code {ExitCode}. StdoutTail: {StandardOutput}. StderrTail: {StandardError}.",
                 result.ExitCode,
                 result.StandardOutput,
                 result.StandardError);
@@ -56,75 +65,6 @@ public sealed class DeepFilterNetEnhancementService : IDeepFilterNetEnhancementS
         _logger.LogInformation("DeepFilterNet enhancement completed: {OutputWavFile}.", outputWavFile);
 
         return outputWavFile;
-    }
-
-    private async Task<ProcessResult> RunDeepFilterNetAsync(
-        string inputWavFile,
-        string outputWavFile,
-        CancellationToken cancellationToken)
-    {
-        using var process = new Process();
-        process.StartInfo = CreateProcessStartInfo(inputWavFile, outputWavFile);
-
-        try
-        {
-            _logger.LogDebug(
-                "Starting DeepFilterNet command: {Command}",
-                BuildCommandForLog(process.StartInfo.FileName, process.StartInfo.ArgumentList));
-
-            if (!process.Start())
-            {
-                throw new InvalidOperationException("DeepFilterNet process could not be started.");
-            }
-
-            Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            Task<string> standardErrorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
-            await process.WaitForExitAsync(cancellationToken);
-
-            string standardOutput = await standardOutputTask;
-            string standardError = await standardErrorTask;
-
-            LogProcessOutput(standardOutput, standardError);
-
-            return new ProcessResult(process.ExitCode, standardOutput, standardError);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKillProcess(process);
-            _logger.LogWarning("DeepFilterNet enhancement was canceled.");
-            throw;
-        }
-        catch (System.ComponentModel.Win32Exception ex)
-        {
-            _logger.LogError(ex, "DeepFilterNet executable could not be started: {ExecutablePath}.", _options.DeepFilterNetPath);
-            throw new InvalidOperationException(
-                $"DeepFilterNet executable could not be started. Check AudioEnhancer:DeepFilterNetPath in appsettings.json. Current value: '{_options.DeepFilterNetPath}'.",
-                ex);
-        }
-        catch (Exception ex) when (ex is not InvalidOperationException)
-        {
-            _logger.LogError(ex, "Unexpected error while running DeepFilterNet enhancement.");
-            throw new InvalidOperationException("Unexpected error while running DeepFilterNet enhancement.", ex);
-        }
-    }
-
-    private ProcessStartInfo CreateProcessStartInfo(string inputWavFile, string outputWavFile)
-    {
-        var processStartInfo = new ProcessStartInfo
-        {
-            FileName = _options.DeepFilterNetPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        processStartInfo.ArgumentList.Add(inputWavFile);
-        processStartInfo.ArgumentList.Add("-o");
-        processStartInfo.ArgumentList.Add(outputWavFile);
-
-        return processStartInfo;
     }
 
     private void EnsureExecutableConfigured()
@@ -174,34 +114,20 @@ public sealed class DeepFilterNetEnhancementService : IDeepFilterNetEnhancementS
         }
     }
 
-    private void LogProcessOutput(string standardOutput, string standardError)
+    private void LogProcessOutput(ProcessRunResult result)
     {
-        if (!string.IsNullOrWhiteSpace(standardOutput))
+        if (!string.IsNullOrWhiteSpace(result.StandardOutput))
         {
-            _logger.LogInformation("DeepFilterNet stdout: {StandardOutput}", standardOutput);
+            _logger.LogDebug("DeepFilterNet stdout tail: {StandardOutput}", result.StandardOutput);
         }
 
-        if (!string.IsNullOrWhiteSpace(standardError))
+        if (!string.IsNullOrWhiteSpace(result.StandardError))
         {
-            _logger.LogInformation("DeepFilterNet stderr: {StandardError}", standardError);
+            _logger.LogDebug("DeepFilterNet stderr tail: {StandardError}", result.StandardError);
         }
     }
 
-    private static void TryKillProcess(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    private static string GetBestError(ProcessResult result)
+    private static string GetBestError(ProcessRunResult result)
     {
         if (!string.IsNullOrWhiteSpace(result.StandardError))
         {
@@ -215,21 +141,4 @@ public sealed class DeepFilterNetEnhancementService : IDeepFilterNetEnhancementS
 
         return "No DeepFilterNet output was captured.";
     }
-
-    private static string BuildCommandForLog(string executablePath, IEnumerable<string> arguments)
-    {
-        return $"{EscapeForLog(executablePath)} {string.Join(' ', arguments.Select(EscapeForLog))}";
-    }
-
-    private static string EscapeForLog(string argument)
-    {
-        return argument.Contains(' ', StringComparison.Ordinal)
-            ? $"\"{argument}\""
-            : argument;
-    }
-
-    private sealed record ProcessResult(
-        int ExitCode,
-        string StandardOutput,
-        string StandardError);
 }

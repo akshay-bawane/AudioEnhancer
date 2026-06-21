@@ -16,7 +16,12 @@ internal static class Program
 
         using ServiceProvider serviceProvider = new ServiceCollection()
             .AddAudioEnhancerApplication(configuration)
-            .BuildServiceProvider();
+            .BuildServiceProvider(
+                new ServiceProviderOptions
+                {
+                    ValidateOnBuild = true,
+                    ValidateScopes = true
+                });
 
         IAudioEnhancementWorkflowService workflow = serviceProvider.GetRequiredService<IAudioEnhancementWorkflowService>();
 

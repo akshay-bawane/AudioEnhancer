@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using AudioEnhancer.Application.Interfaces;
 using AudioEnhancer.Application.Models;
 using AudioEnhancer.Infrastructure.Options;
@@ -15,18 +14,18 @@ public sealed class FfmpegVideoService : IVideoService
 {
     private readonly AudioEnhancerOptions _options;
     private readonly IFfmpegInstallationValidator _ffmpegInstallationValidator;
-    private readonly IProcessRunner _processRunner;
+    private readonly IExternalProcessExecutor _processExecutor;
     private readonly ILogger<FfmpegVideoService> _logger;
 
     public FfmpegVideoService(
         IOptions<AudioEnhancerOptions> options,
         IFfmpegInstallationValidator ffmpegInstallationValidator,
-        IProcessRunner processRunner,
+        IExternalProcessExecutor processExecutor,
         ILogger<FfmpegVideoService> logger)
     {
         _options = options.Value;
         _ffmpegInstallationValidator = ffmpegInstallationValidator;
-        _processRunner = processRunner;
+        _processExecutor = processExecutor;
         _logger = logger;
     }
 
@@ -51,7 +50,7 @@ public sealed class FfmpegVideoService : IVideoService
             validatedVideoPath,
             validatedOutputAudioPath);
 
-        await RunFfmpegWithRetryAsync(
+        await ExecuteFfmpegAsync(
             "ExtractAudio",
             validatedOutputAudioPath,
             progress,
@@ -97,7 +96,7 @@ public sealed class FfmpegVideoService : IVideoService
             validatedEnhancedAudio,
             validatedOutputVideo);
 
-        await RunFfmpegWithRetryAsync(
+        await ExecuteFfmpegAsync(
             "ReplaceAudio",
             validatedOutputVideo,
             progress,
@@ -119,130 +118,33 @@ public sealed class FfmpegVideoService : IVideoService
         return validatedOutputVideo;
     }
 
-    private async Task RunFfmpegWithRetryAsync(
+    private async Task ExecuteFfmpegAsync(
         string operation,
         string outputPath,
         IProgress<VideoProcessingProgress>? progress,
         CancellationToken cancellationToken,
         params string[] arguments)
     {
-        int maxAttempts = Math.Max(1, _options.FFmpegRetryCount + 1);
-        TimeSpan retryDelay = TimeSpan.FromMilliseconds(Math.Max(0, _options.FFmpegRetryDelayMilliseconds));
-        Exception? lastException = null;
-
-        for (int attempt = 1; attempt <= maxAttempts; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            DeletePartialOutput(outputPath);
-
-            progress?.Report(new VideoProcessingProgress(operation, "FFmpeg started.", 0, attempt));
-
-            try
-            {
-                await RunFfmpegOnceAsync(operation, cancellationToken, arguments);
-                progress?.Report(new VideoProcessingProgress(operation, "FFmpeg completed.", 95, attempt));
-                return;
-            }
-            catch (OperationCanceledException)
-            {
-                DeletePartialOutput(outputPath);
-                _logger.LogWarning(
-                    "FFmpeg operation was canceled. Operation: {Operation}. Attempt: {Attempt}. OutputPath: {OutputPath}.",
-                    operation,
-                    attempt,
-                    outputPath);
-                throw;
-            }
-            catch (Exception ex) when (attempt < maxAttempts)
-            {
-                lastException = ex;
-                DeletePartialOutput(outputPath);
-
-                _logger.LogWarning(
-                    ex,
-                    "FFmpeg operation failed and will be retried. Operation: {Operation}. Attempt: {Attempt}. MaxAttempts: {MaxAttempts}. RetryDelay: {RetryDelay}.",
-                    operation,
-                    attempt,
-                    maxAttempts,
-                    retryDelay);
-
-                progress?.Report(new VideoProcessingProgress(operation, "FFmpeg failed; retrying.", null, attempt));
-
-                if (retryDelay > TimeSpan.Zero)
-                {
-                    await Task.Delay(retryDelay, cancellationToken);
-                }
-            }
-            catch
-            {
-                DeletePartialOutput(outputPath);
-                throw;
-            }
-        }
-
-        throw new InvalidOperationException($"FFmpeg operation failed after {maxAttempts} attempts: {operation}.", lastException);
-    }
-
-    private async Task RunFfmpegOnceAsync(
-        string operation,
-        CancellationToken cancellationToken,
-        params string[] arguments)
-    {
-        ProcessStartInfo startInfo = CreateProcessStartInfo(arguments);
+        var attemptProgress = new Progress<int>(attempt =>
+            progress?.Report(new VideoProcessingProgress(operation, "FFmpeg started.", 0, attempt)));
 
         _logger.LogDebug(
             "Starting FFmpeg command. Operation: {Operation}. Command: {Command}.",
             operation,
             BuildCommandForLog(_options.FFmpegPath, arguments));
 
-        ProcessRunResult result = await _processRunner.RunAsync(startInfo, cancellationToken);
-
-        if (!string.IsNullOrWhiteSpace(result.StandardOutput))
-        {
-            _logger.LogDebug(
-                "FFmpeg stdout. Operation: {Operation}. StandardOutput: {StandardOutput}.",
+        ProcessRunResult result = await _processExecutor.ExecuteAsync(
+            new ExternalProcessRequest(
                 operation,
-                result.StandardOutput);
-        }
+                ProcessStartInfoFactory.Create(_options.FFmpegPath, arguments),
+                outputPath,
+                _options.FFmpegRetryCount,
+                TimeSpan.FromMilliseconds(Math.Max(0, _options.FFmpegRetryDelayMilliseconds))),
+            attemptProgress,
+            cancellationToken);
 
-        if (!string.IsNullOrWhiteSpace(result.StandardError))
-        {
-            _logger.LogDebug(
-                "FFmpeg stderr. Operation: {Operation}. StandardError: {StandardError}.",
-                operation,
-                result.StandardError);
-        }
-
-        if (result.ExitCode != 0)
-        {
-            _logger.LogError(
-                "FFmpeg failed. Operation: {Operation}. ExitCode: {ExitCode}. Error: {StandardError}.",
-                operation,
-                result.ExitCode,
-                result.StandardError);
-
-            throw new InvalidOperationException(
-                $"FFmpeg failed during {operation} with exit code {result.ExitCode}. Details: {GetBestError(result)}");
-        }
-    }
-
-    private ProcessStartInfo CreateProcessStartInfo(IReadOnlyList<string> arguments)
-    {
-        var processStartInfo = new ProcessStartInfo
-        {
-            FileName = _options.FFmpegPath,
-            UseShellExecute = false,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true
-        };
-
-        foreach (string argument in arguments)
-        {
-            processStartInfo.ArgumentList.Add(argument);
-        }
-
-        return processStartInfo;
+        LogProcessTail(operation, result);
+        progress?.Report(new VideoProcessingProgress(operation, "FFmpeg completed.", 95));
     }
 
     private static string ValidateExistingFile(string path, string parameterName, string displayName)
@@ -325,35 +227,23 @@ public sealed class FfmpegVideoService : IVideoService
         }
     }
 
-    private void DeletePartialOutput(string outputPath)
+    private void LogProcessTail(string operation, ProcessRunResult result)
     {
-        try
-        {
-            if (File.Exists(outputPath))
-            {
-                File.Delete(outputPath);
-                _logger.LogDebug("Deleted partial FFmpeg output. OutputPath: {OutputPath}.", outputPath);
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _logger.LogWarning(ex, "Could not delete partial FFmpeg output. OutputPath: {OutputPath}.", outputPath);
-        }
-    }
-
-    private static string GetBestError(ProcessRunResult result)
-    {
-        if (!string.IsNullOrWhiteSpace(result.StandardError))
-        {
-            return result.StandardError;
-        }
-
         if (!string.IsNullOrWhiteSpace(result.StandardOutput))
         {
-            return result.StandardOutput;
+            _logger.LogDebug(
+                "FFmpeg stdout tail. Operation: {Operation}. StandardOutput: {StandardOutput}.",
+                operation,
+                result.StandardOutput);
         }
 
-        return "No FFmpeg output was captured.";
+        if (!string.IsNullOrWhiteSpace(result.StandardError))
+        {
+            _logger.LogDebug(
+                "FFmpeg stderr tail. Operation: {Operation}. StandardError: {StandardError}.",
+                operation,
+                result.StandardError);
+        }
     }
 
     private static string BuildCommandForLog(string executablePath, IEnumerable<string> arguments)

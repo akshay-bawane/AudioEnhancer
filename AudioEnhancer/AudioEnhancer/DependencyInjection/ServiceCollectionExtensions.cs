@@ -18,14 +18,25 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddAudioEnhancerApplication(this IServiceCollection services, IConfiguration configuration)
     {
-        services.Configure<AudioEnhancerOptions>(configuration.GetSection(AudioEnhancerOptions.SectionName));
+        services.AddOptions<AudioEnhancerOptions>()
+            .Bind(configuration.GetSection(AudioEnhancerOptions.SectionName))
+            .Validate(options => !string.IsNullOrWhiteSpace(options.FFmpegPath), "FFmpegPath is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.TempFolder), "TempFolder is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.OutputFolder), "OutputFolder is required.")
+            .Validate(options => options.FFmpegRetryCount >= 0, "FFmpegRetryCount must be zero or greater.")
+            .Validate(options => options.FFmpegRetryDelayMilliseconds >= 0, "FFmpegRetryDelayMilliseconds must be zero or greater.")
+            .Validate(options => options.ProcessOutputTailLines > 0, "ProcessOutputTailLines must be greater than zero.")
+            .ValidateOnStart();
 
         services.AddSingleton<IConsoleInputService, ConsoleInputService>();
         services.AddSingleton<IUserApprovalService, UserApprovalService>();
+        services.AddSingleton<IWorkflowProgressReporter, ConsoleWorkflowProgressReporter>();
         services.AddSingleton<IOutputPathService, OutputPathService>();
+        services.AddSingleton<ITemporaryFileCleaner, TemporaryFileCleaner>();
         services.AddLogging(builder => builder.AddConsole());
 
         services.AddSingleton<IProcessRunner, ProcessRunner>();
+        services.AddSingleton<IExternalProcessExecutor, ExternalProcessExecutor>();
         services.AddSingleton<IFfmpegInstallationValidator, FfmpegInstallationValidator>();
         services.AddSingleton<IVideoService, FfmpegVideoService>();
         services.AddSingleton<IAudioExtractor, FfmpegAudioExtractor>();

@@ -17,4 +17,6 @@ public sealed class AudioEnhancerOptions
     public int FFmpegRetryCount { get; init; } = 2;
 
     public int FFmpegRetryDelayMilliseconds { get; init; } = 500;
+
+    public int ProcessOutputTailLines { get; init; } = 200;
 }
